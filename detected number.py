@@ -1,118 +1,123 @@
+import streamlit as st
+import pandas as pd
 from TikTokLive import TikTokLiveClient
 from TikTokLive.events import ConnectEvent, CommentEvent
 import re
 from datetime import datetime, timedelta
-import os
+import asyncio
+import io
 
-# Create the client instance with the correct argument
-client: TikTokLiveClient = TikTokLiveClient(unique_id="@www.qpr.tn")
-
-# Directory to store daily logs
-log_dir = "logs"
-
-# Ensure the main log directory exists
-os.makedirs(log_dir, exist_ok=True)
-
-# Function to get the daily log folder
-def get_daily_log_folder():
-    current_date = datetime.now().strftime('%Y-%m-%d')
-    daily_folder = os.path.join(log_dir, current_date)
-    os.makedirs(daily_folder, exist_ok=True)  # Create the folder if it doesn't exist
-    return daily_folder
-
-# Function to write a custom entry to the log file
-def write_to_log(daily_folder, filename, log_entry):
-    file_path = os.path.join(daily_folder, filename)
-    with open(file_path, "a", encoding="utf-8") as log_file:
-        log_file.write(log_entry)
-        log_file.flush()
-
-# Dictionary to track detected numbers and their timestamps
+# In-memory storage for logs
+data_log = []
 recent_numbers = {}
-
-# Time window for spam detection (3 minutes)
 SPAM_TIME_WINDOW = timedelta(minutes=3)
 
-# Updated function to extract valid 8-digit phone numbers
+# Function to extract valid 8-digit phone numbers
 def extract_eight_digit_numbers(comment):
-    """
-    Extract phone numbers intelligently from comments.
-    Assumes 8-digit phone numbers may appear fragmented.
-    """
-    # Find all digit groups in the comment
     digit_groups = re.findall(r'\d+', comment)
     cleaned_number = ""
-
-    # Merge groups into an 8-digit phone number
     for group in digit_groups:
         if len(cleaned_number) < 8:
             cleaned_number += group
         elif len(cleaned_number) == 8:
-            break  # Stop adding once we have 8 digits
+            break
+    return [cleaned_number] if len(cleaned_number) == 8 else []
 
-    # If we formed a valid phone number, return it
-    if len(cleaned_number) == 8:
-        return [cleaned_number]
-    return []
+# Streamlit dashboard
+def main():
+    st.set_page_config(page_title="TikTok Scraper Dashboard", layout="wide")
 
-# Event handler for successful connection
-@client.on(ConnectEvent)
-async def on_connect(event: ConnectEvent):
-    print(f"Connected to @{event.unique_id} (Room ID: {client.room_id})")
+    if "connection_status" not in st.session_state:
+        st.session_state["connection_status"] = "Not connected"
+    if "logs" not in st.session_state:
+        st.session_state["logs"] = pd.DataFrame(columns=["Timestamp", "Username", "Number", "Comment", "Spam"])
 
-# Event handler for comments
-@client.on(CommentEvent)
-async def on_comment(event: CommentEvent):
-    # Extract potential 8-digit numbers from the comment
-    detected_numbers = extract_eight_digit_numbers(event.comment)
-    current_time = datetime.now()
-    daily_folder = get_daily_log_folder()
+    st.title("TikTok Scraper Dashboard")
 
-    if detected_numbers:
-        for detected_number in detected_numbers:
-            is_spam = False
-            was_flagged = False
+    # Input for TikTok Live ID
+    live_id = st.text_input("Enter TikTok Live ID:", "@ID")
 
-            # Check if the number has been recently logged
-            if detected_number in recent_numbers:
-                last_logged_time = recent_numbers[detected_number]
-                if current_time - last_logged_time < SPAM_TIME_WINDOW:
-                    is_spam = True  # Mark as spam
-                else:
-                    was_flagged = True  # Previously logged but outside the spam window
+    # Display connection status
+    st.subheader("Connection Status")
+    st.text(st.session_state["connection_status"])
 
-            # Update the timestamp of the detected number
-            recent_numbers[detected_number] = current_time
+    # Create a container for logs
+    log_container = st.empty()
 
-            # Add "FLAGGED" prefix if previously flagged
-            if was_flagged:
-                detected_number = f"FLAGGED {detected_number}"
+    # Display logs (initially empty)
+    log_container.subheader("Detected Numbers and Comments")
+    log_container.dataframe(st.session_state["logs"], use_container_width=True)
 
-            # Log the detected number
-            username = event.user.nickname if hasattr(event.user, 'nickname') else event.user.unique_id
-            timestamp = current_time.strftime('%Y-%m-%d %H:%M:%S')
-            log_entry = f"[{timestamp}] Username: {username} - Number: {detected_number} - Comment: {event.comment}\n"
+    # Start the TikTok client
+    if st.button("Start Scraper"):
+        try:
+            if live_id.strip() == "":
+                st.error("Please enter a valid TikTok Live ID.")
+                return
 
-            # Write the log entry to the daily log file
-            if not is_spam or (is_spam and current_time - last_logged_time >= SPAM_TIME_WINDOW):
-                write_to_log(daily_folder, "flagged_comments.log", log_entry)
+            client = TikTokLiveClient(unique_id=live_id)
 
-            # Print message with spam status
-            if is_spam:
-                print(f"Spam detected and flagged: {detected_number}")
-            else:
-                print(f"New number detected: {detected_number} from {username} at {timestamp}")
+            # Event handler for connection
+            @client.on(ConnectEvent)
+            async def on_connect(event: ConnectEvent):
+                st.session_state["connection_status"] = f"Connected to @{event.unique_id}"
 
-    # Check for the !write command in comments
-    elif event.comment.startswith("!write"):
-        # Extract the custom text after the command
-        custom_text = event.comment[6:].strip()
-        if custom_text:  # Ensure there's text to write
-            write_to_log(daily_folder, "custom_log.log", f"[{current_time.strftime('%Y-%m-%d %H:%M:%S')}] {custom_text}\n")
-            print(f"Custom text added to log: {custom_text}")
+            # Event handler for comments
+            @client.on(CommentEvent)
+            async def on_comment(event: CommentEvent):
+                detected_numbers = extract_eight_digit_numbers(event.comment)
+                current_time = datetime.now()
 
-# Main entry point
+                if detected_numbers:
+                    for detected_number in detected_numbers:
+                        is_spam = False
+                        was_flagged = False
+
+                        if detected_number in recent_numbers:
+                            last_logged_time = recent_numbers[detected_number]
+                            if current_time - last_logged_time < SPAM_TIME_WINDOW:
+                                is_spam = True
+                            else:
+                                was_flagged = True
+
+                        recent_numbers[detected_number] = current_time
+
+                        if was_flagged:
+                            detected_number = f"FLAGGED {detected_number}"
+
+                        username = event.user.nickname if hasattr(event.user, 'nickname') else event.user.unique_id
+                        timestamp = current_time.strftime('%Y-%m-%d %H:%M:%S')
+                        log_entry = {
+                            "Timestamp": timestamp,
+                            "Username": username,
+                            "Number": detected_number,
+                            "Comment": event.comment,
+                            "Spam": "Yes" if is_spam else "No"
+                        }
+
+                        data_log.append(log_entry)
+                        
+                        # Update session state with new log entries
+                        st.session_state["logs"] = pd.DataFrame(data_log)
+
+                        # Update the log container dynamically
+                        log_container.dataframe(st.session_state["logs"], use_container_width=True)
+
+            asyncio.run(client.run())
+        except Exception as e:
+            st.error(f"An error occurred: {e}")
+
+    # Button to download the logs as CSV
+    if not st.session_state["logs"].empty:
+        # Convert the DataFrame to CSV format
+        csv = st.session_state["logs"].to_csv(index=False)
+        # Create a download button
+        st.download_button(
+            label="Download Logs as CSV",
+            data=csv,
+            file_name="tiktok_logs.csv",
+            mime="text/csv"
+        )
+
 if __name__ == "__main__":
-    import asyncio
-
-    asyncio.run(client.run())
+    main()
