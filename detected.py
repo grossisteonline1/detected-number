@@ -1,16 +1,18 @@
 import streamlit as st
 import pandas as pd
 from TikTokLive import TikTokLiveClient
-from TikTokLive.events import ConnectEvent, CommentEvent
+from TikTokLive.events import ConnectEvent, CommentEvent, DisconnectEvent
 import re
 from datetime import datetime, timedelta
 import asyncio
-import io
+import logging
 
 # In-memory storage for logs
-data_log = []
-recent_numbers = {}
 SPAM_TIME_WINDOW = timedelta(minutes=3)
+recent_numbers = {}
+
+# Set up logging for uncaught exceptions
+logging.basicConfig(level=logging.ERROR)
 
 # Function to extract valid 8-digit phone numbers
 def extract_eight_digit_numbers(comment):
@@ -27,10 +29,13 @@ def extract_eight_digit_numbers(comment):
 def main():
     st.set_page_config(page_title="TikTok Scraper Dashboard", layout="wide")
 
+    # Initialize session state variables
     if "connection_status" not in st.session_state:
         st.session_state["connection_status"] = "Not connected"
     if "logs" not in st.session_state:
         st.session_state["logs"] = pd.DataFrame(columns=["Timestamp", "Username", "Number", "Comment", "Spam"])
+    if "scraper_active" not in st.session_state:
+        st.session_state["scraper_active"] = False
 
     st.title("TikTok Scraper Dashboard")
 
@@ -44,68 +49,92 @@ def main():
     # Create a container for logs
     log_container = st.empty()
 
-    # Display logs (initially empty)
+    # Display logs (initially empty or loaded from session state)
     log_container.subheader("Detected Numbers and Comments")
     log_container.dataframe(st.session_state["logs"], use_container_width=True)
 
-    # Start the TikTok client
-    if st.button("Start Scraper"):
-        try:
-            if live_id.strip() == "":
-                st.error("Please enter a valid TikTok Live ID.")
-                return
+    # Function to start the scraper
+    async def start_scraper():
+        if live_id.strip() == "":
+            st.error("Please enter a valid TikTok Live ID.")
+            return
 
-            client = TikTokLiveClient(unique_id=live_id)
+        # Initialize the TikTokLiveClient
+        client = TikTokLiveClient(unique_id=live_id)
 
-            # Event handler for connection
-            @client.on(ConnectEvent)
-            async def on_connect(event: ConnectEvent):
+        # Define event handlers
+        @client.on(ConnectEvent)
+        async def on_connect(event: ConnectEvent):
+            try:
                 st.session_state["connection_status"] = f"Connected to @{event.unique_id}"
+            except Exception as e:
+                logging.error(f"Error during connection: {e}")
 
-            # Event handler for comments
-            @client.on(CommentEvent)
-            async def on_comment(event: CommentEvent):
+        @client.on(DisconnectEvent)
+        async def on_disconnect(event: DisconnectEvent):
+            try:
+                st.session_state["connection_status"] = "Disconnected"
+                st.warning("Disconnected. Attempting to reconnect...")
+            except Exception as e:
+                logging.error(f"Error during disconnection: {e}")
+
+        @client.on(CommentEvent)
+        async def on_comment(event: CommentEvent):
+            try:
                 detected_numbers = extract_eight_digit_numbers(event.comment)
                 current_time = datetime.now()
 
                 if detected_numbers:
                     for detected_number in detected_numbers:
-                        is_spam = False
-                        was_flagged = False
-
-                        if detected_number in recent_numbers:
-                            last_logged_time = recent_numbers[detected_number]
-                            if current_time - last_logged_time < SPAM_TIME_WINDOW:
-                                is_spam = True
-                            else:
-                                was_flagged = True
-
+                        is_spam = detected_number in recent_numbers and (
+                            current_time - recent_numbers[detected_number] < SPAM_TIME_WINDOW
+                        )
                         recent_numbers[detected_number] = current_time
 
-                        if was_flagged:
-                            detected_number = f"FLAGGED {detected_number}"
-
-                        username = event.user.nickname if hasattr(event.user, 'nickname') else event.user.unique_id
-                        timestamp = current_time.strftime('%Y-%m-%d %H:%M:%S')
+                        username = getattr(event.user, 'nickname', event.user.unique_id)
                         log_entry = {
-                            "Timestamp": timestamp,
+                            "Timestamp": current_time.strftime('%Y-%m-%d %H:%M:%S'),
                             "Username": username,
                             "Number": detected_number,
                             "Comment": event.comment,
                             "Spam": "Yes" if is_spam else "No"
                         }
 
-                        data_log.append(log_entry)
-                        
-                        # Update session state with new log entries
-                        st.session_state["logs"] = pd.DataFrame(data_log)
+                        # Append new log entry to session state logs using pd.concat()
+                        st.session_state["logs"] = pd.concat([st.session_state["logs"], pd.DataFrame([log_entry])], ignore_index=True)
 
-                        # Update the log container dynamically
+                        # Update the displayed log on Streamlit
                         log_container.dataframe(st.session_state["logs"], use_container_width=True)
+            except Exception as e:
+                logging.error(f"Error processing comment: {e}")
 
-            asyncio.run(client.run())
-        except Exception as e:
-            st.error(f"An error occurred: {e}")
+        # Global error handler for the asyncio loop
+        def handle_exception(loop, context):
+            error_message = context.get("exception", context["message"])
+            logging.error(f"Uncaught exception: {error_message}")
+
+        # Register global exception handler for asyncio loop
+        asyncio.get_event_loop().set_exception_handler(handle_exception)
+
+        # Run client and reconnect on failure
+        async def run_client_with_reconnect():
+            retries = 0
+            while True:
+                try:
+                    await client.connect()  # Properly connect to TikTokLive
+                    await client.run()  # Start the event loop for the client
+                except Exception as e:
+                    retries += 1
+                    logging.error(f"Connection lost. Retrying... (Retry {retries})")
+                    await asyncio.sleep(5)  # Wait before retrying
+
+        # Run the async client in an asyncio loop
+        await run_client_with_reconnect()
+
+    # Button to start the scraper
+    if st.button("Start Scraper") or st.session_state["scraper_active"]:
+        st.session_state["scraper_active"] = True
+        asyncio.run(start_scraper())  # Run the scraper in the asyncio event loop
 
     # Button to download the logs as CSV
     if not st.session_state["logs"].empty:
