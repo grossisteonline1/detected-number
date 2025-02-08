@@ -8,9 +8,13 @@ import asyncio
 import logging
 
 # Constants
-SPAM_TIME_WINDOW = timedelta(minutes=3)
+SPAM_TIME_WINDOW = timedelta(minutes=3)  # Time window for spam detection
+RECONNECT_DELAY = 10  # Delay in seconds before reconnecting
 
-# Set up logging
+# In-memory storage for logs and timestamps
+recent_numbers = {}  # Store timestamps for each number
+
+# Set up logging for uncaught exceptions
 logging.basicConfig(level=logging.ERROR)
 
 # Function to extract valid 8-digit phone numbers
@@ -23,165 +27,176 @@ def extract_eight_digit_numbers(comment):
 def main():
     st.set_page_config(page_title="TikTok Scraper Dashboard", layout="wide")
 
-    # Initialize session state
+    # Initialize session state variables
     if "connection_status" not in st.session_state:
-        st.session_state["connection_status"] = {
-            "stream1": "Not connected",
-            "stream2": "Not connected",
-            "stream3": "Not connected",
-            "stream4": "Not connected"
-        }
+        st.session_state["connection_status"] = {}
     if "logs" not in st.session_state:
-        st.session_state["logs"] = pd.DataFrame(columns=["Timestamp", "Stream", "Username", "Number", "Comment", "Spam"])
+        st.session_state["logs"] = {}
     if "scraper_active" not in st.session_state:
-        st.session_state["scraper_active"] = False
-    if "recent_numbers" not in st.session_state:
-        st.session_state["recent_numbers"] = {}
+        st.session_state["scraper_active"] = {}
+    if "connection_lost_notified" not in st.session_state:
+        st.session_state["connection_lost_notified"] = {}
+    if "clients" not in st.session_state:
+        st.session_state["clients"] = {}
 
     st.title("TikTok Scraper Dashboard")
 
+    # Sidebar for dynamic stream count
+    MAX_STREAMS = st.sidebar.number_input("Number of Streams", min_value=1, max_value=10, value=4, key="max_streams")
+
     # Input for TikTok Live IDs
-    col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        live_id_1 = st.text_input("Enter TikTok Live ID for Stream 1:", "@ID1")
-    with col2:
-        live_id_2 = st.text_input("Enter TikTok Live ID for Stream 2:", "@ID2")
-    with col3:
-        live_id_3 = st.text_input("Enter TikTok Live ID for Stream 3:", "@ID3")
-    with col4:
-        live_id_4 = st.text_input("Enter TikTok Live ID for Stream 4:", "@ID4")
+    live_ids = []
+    for i in range(MAX_STREAMS):
+        live_id = st.text_input(f"Stream {i + 1} Live ID:", key=f"live_id_{i}")
+        live_ids.append(live_id)
 
-    # Display connection status
+    # Display connection status for each stream with visual badges
     st.subheader("Connection Status")
-    st.text(f"Stream 1: {st.session_state['connection_status']['stream1']}")
-    st.text(f"Stream 2: {st.session_state['connection_status']['stream2']}")
-    st.text(f"Stream 3: {st.session_state['connection_status']['stream3']}")
-    st.text(f"Stream 4: {st.session_state['connection_status']['stream4']}")
+    for i in range(MAX_STREAMS):
+        status = st.session_state["connection_status"].get(i, "Not connected")
+        color = "green" if "Connected" in status else "red"
+        st.markdown(
+            f"Stream {i + 1}: <span style='color: {color}; font-weight: bold;'>{status}</span>",
+            unsafe_allow_html=True
+        )
 
-    # Create a container for logs
+    # Create a container for combined logs
     log_container = st.empty()
 
-    # Display logs
-    log_container.subheader("Detected Numbers and Comments")
-    log_container.dataframe(st.session_state["logs"], use_container_width=True)
+    # Function to combine logs from all streams
+    def combine_logs():
+        combined_logs = pd.concat([st.session_state["logs"].get(i, pd.DataFrame(columns=["Timestamp", "Username", "Number", "Comment", "Spam", "Stream"])) for i in range(MAX_STREAMS)], ignore_index=True)
+        return combined_logs.sort_values(by="Timestamp", ascending=False)  # Sort by timestamp
+
+    # Display combined logs
+    log_container.subheader("Detected Numbers and Comments (All Streams)")
+    log_container.dataframe(combine_logs(), use_container_width=True)
 
     # Function to handle comment events
-    async def handle_comment(event: CommentEvent, stream_name: str):
+    async def handle_comment(event: CommentEvent, stream_index: int):
         try:
             detected_numbers = extract_eight_digit_numbers(event.comment)
             current_time = datetime.now()
 
             if detected_numbers:
                 for detected_number in detected_numbers:
-                    is_spam = detected_number in st.session_state["recent_numbers"] and (
-                        current_time - st.session_state["recent_numbers"][detected_number] < SPAM_TIME_WINDOW
+                    is_spam = detected_number in recent_numbers and (
+                        current_time - recent_numbers[detected_number] < SPAM_TIME_WINDOW
                     )
-                    st.session_state["recent_numbers"][detected_number] = current_time
+                    recent_numbers[detected_number] = current_time
 
                     username = getattr(event.user, 'nickname', event.user.unique_id)
                     log_entry = {
                         "Timestamp": current_time.strftime('%Y-%m-%d %H:%M:%S'),
-                        "Stream": stream_name,
                         "Username": username,
                         "Number": detected_number,
                         "Comment": event.comment,
-                        "Spam": "Yes" if is_spam else "No"
+                        "Spam": "Yes" if is_spam else "No",
+                        "Stream": f"Stream {stream_index + 1}"  # Add stream identifier
                     }
 
-                    # Append new log entry to session state logs
-                    st.session_state["logs"] = pd.concat(
-                        [st.session_state["logs"], pd.DataFrame([log_entry])],
+                    # Append new log entry to session state logs for the specific stream
+                    if stream_index not in st.session_state["logs"]:
+                        st.session_state["logs"][stream_index] = pd.DataFrame(columns=["Timestamp", "Username", "Number", "Comment", "Spam", "Stream"])
+                    st.session_state["logs"][stream_index] = pd.concat(
+                        [st.session_state["logs"][stream_index], pd.DataFrame([log_entry])],
                         ignore_index=True
                     )
 
-                    # Update the displayed log on Streamlit
-                    log_container.dataframe(st.session_state["logs"], use_container_width=True)
+                    # Update the displayed combined logs on Streamlit
+                    log_container.dataframe(combine_logs(), use_container_width=True)
         except Exception as e:
-            logging.error(f"Error processing comment: {e}")
+            logging.error(f"Error processing comment in Stream {stream_index + 1}: {e}")
 
-    # Function to start the scraper for a single stream
-    async def run_stream_client(stream_name: str, live_id: str):
+    # Function to start the scraper for a specific stream
+    async def start_scraper(stream_index: int, live_id: str):
         if live_id.strip() == "":
-            st.session_state["connection_status"][stream_name] = "Not connected"
-            return  # Skip this stream if the Live ID is empty
+            st.error(f"Please enter a valid TikTok Live ID for Stream {stream_index + 1}.")
+            return
 
         # Initialize the TikTokLiveClient
         client = TikTokLiveClient(unique_id=live_id)
+        st.session_state["clients"][stream_index] = client  # Store client in session state
 
         # Define event handlers
         @client.on(ConnectEvent)
         async def on_connect(event: ConnectEvent):
-            st.session_state["connection_status"][stream_name] = f"Connected to @{event.unique_id}"
-            st.success(f"{stream_name} connected.")
+            try:
+                st.session_state["connection_status"][stream_index] = f"Connected to @{event.unique_id}"
+                st.session_state["connection_lost_notified"][stream_index] = False  # Reset notification flag
+            except Exception as e:
+                logging.error(f"Error during connection in Stream {stream_index + 1}: {e}")
 
         @client.on(DisconnectEvent)
         async def on_disconnect(event: DisconnectEvent):
-            st.session_state["connection_status"][stream_name] = "Disconnected"
-            st.warning(f"{stream_name} disconnected. Attempting to reconnect...")
+            try:
+                st.session_state["connection_status"][stream_index] = "Disconnected"
+                if not st.session_state["connection_lost_notified"].get(stream_index, False):
+                    st.warning(f"Connection lost for Stream {stream_index + 1}! Attempting to reconnect...")
+                    st.session_state["connection_lost_notified"][stream_index] = True  # Set notification flag
+
+                # Add a delay before reconnecting
+                await asyncio.sleep(RECONNECT_DELAY)
+                await client.connect()  # Reconnect the client
+            except Exception as e:
+                logging.error(f"Error during disconnection in Stream {stream_index + 1}: {e}")
 
         @client.on(CommentEvent)
         async def on_comment(event: CommentEvent):
-            await handle_comment(event, stream_name)
+            await handle_comment(event, stream_index)
 
-        # Run client and reconnect on failure with fixed 10-second retry time
-        while st.session_state["scraper_active"]:
-            try:
-                await client.start()
-                break  # Break if the connection is successful
-            except Exception as e:
-                logging.error(f"{stream_name} connection lost. Error: {e}. Retrying in 10 seconds...")
-                await asyncio.sleep(10)
+        # Run the client
+        try:
+            await client.connect()
+            await client.run()
+        except Exception as e:
+            logging.error(f"Error running client for Stream {stream_index + 1}: {e}")
+            st.session_state["connection_status"][stream_index] = "Connection failed"
 
-    # Function to start all scrapers
-    async def start_scrapers():
+    # Function to run all scrapers
+    async def run_all_scrapers():
         tasks = []
-        if live_id_1.strip():
-            tasks.append(run_stream_client("stream1", live_id_1))
-        if live_id_2.strip():
-            tasks.append(run_stream_client("stream2", live_id_2))
-        if live_id_3.strip():
-            tasks.append(run_stream_client("stream3", live_id_3))
-        if live_id_4.strip():
-            tasks.append(run_stream_client("stream4", live_id_4))
-        
-        if tasks:
-            await asyncio.gather(*tasks)
-        else:
-            st.error("Please enter at least one valid TikTok Live ID.")
+        for i in range(MAX_STREAMS):
+            if live_ids[i].strip() != "":
+                tasks.append(start_scraper(i, live_ids[i]))
+        await asyncio.gather(*tasks)
 
-    # Button to start the scraper
-    if st.button("Start Scraper") or st.session_state["scraper_active"]:
-        st.session_state["scraper_active"] = True
-        with st.spinner("Scraper is running..."):
-            try:
-                asyncio.run(start_scrapers())
-            except Exception as e:
-                logging.error(f"Error in scraper: {e}")
+    # Function to stop all scrapers
+    async def stop_all_scrapers():
+        for i in range(MAX_STREAMS):
+            st.session_state["scraper_active"][i] = False
+            if i in st.session_state["clients"]:
+                client = st.session_state["clients"][i]
+                await client.disconnect()  # Gracefully disconnect
+                del st.session_state["clients"][i]  # Remove client from session state
+        st.success("All scrapers stopped.")
 
-    # Button to stop the scraper
-    if st.button("Stop Scraper"):
-        st.session_state["scraper_active"] = False
-        st.session_state["connection_status"] = {
-            "stream1": "Not connected",
-            "stream2": "Not connected",
-            "stream3": "Not connected",
-            "stream4": "Not connected"
-        }
-        st.session_state["recent_numbers"] = {}  # Clear recent numbers
-        st.success("Scraper stopped.")
+    # Button to start all scrapers
+    if st.button("Start All Scrapers"):
+        for i in range(MAX_STREAMS):
+            if live_ids[i].strip() != "":
+                st.session_state["scraper_active"][i] = True
 
-    # Button to clear logs
-    if st.button("Clear Logs"):
-        st.session_state["logs"] = pd.DataFrame(columns=["Timestamp", "Stream", "Username", "Number", "Comment", "Spam"])
-        st.success("Logs cleared.")
+        # Create and run the event loop
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(run_all_scrapers())
 
-    # Button to download the logs as CSV
-    if not st.session_state["logs"].empty:
-        csv = st.session_state["logs"].to_csv(index=False)
+    # Button to stop all scrapers
+    if st.button("Stop All Scrapers"):
+        # Create and run the event loop for stopping
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(stop_all_scrapers())
+
+    # Button to download combined logs as CSV
+    combined_logs = combine_logs()
+    if not combined_logs.empty:
+        csv = combined_logs.to_csv(index=False)
         st.download_button(
-            label="Download Logs as CSV",
+            label="Download Combined Logs as CSV",
             data=csv,
-            file_name="tiktok_logs.csv",
+            file_name="tiktok_logs_combined.csv",
             mime="text/csv"
         )
 
