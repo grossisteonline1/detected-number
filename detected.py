@@ -41,8 +41,9 @@ def main():
 
     st.title("TikTok Scraper Dashboard")
 
-    # Sidebar for dynamic stream count
+    # Sidebar for dynamic stream count and allow duplicates option
     MAX_STREAMS = st.sidebar.number_input("Number of Streams", min_value=1, max_value=10, value=4, key="max_streams")
+    ALLOW_DUPLICATES = st.sidebar.checkbox("Allow Duplicate Numbers", value=False, key="allow_duplicates")
 
     # Input for TikTok Live IDs
     live_ids = []
@@ -80,6 +81,10 @@ def main():
 
             if detected_numbers:
                 for detected_number in detected_numbers:
+                    # Check if duplicates are allowed
+                    if not ALLOW_DUPLICATES and detected_number in recent_numbers:
+                        continue  # Skip duplicate numbers if not allowed
+
                     is_spam = detected_number in recent_numbers and (
                         current_time - recent_numbers[detected_number] < SPAM_TIME_WINDOW
                     )
