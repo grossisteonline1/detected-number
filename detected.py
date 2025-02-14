@@ -22,50 +22,65 @@ def extract_eight_digit_numbers(comment):
     """
     Extract valid 8-digit numbers from a comment.
     """
-    # Regex to match 8-digit numbers, allowing for spaces, hyphens, or other separators
-    number_pattern = re.compile(
-        r"""
-        (?<!\d)          # Negative lookbehind to ensure the number is not part of a longer sequence
-        (\d{2}[-\s]?\d{2}[-\s]?\d{2}[-\s]?\d{2})  # Match 8 digits with optional separators
-        (?!\d)           # Negative lookahead to ensure the number is not part of a longer sequence
-        """,
-        re.VERBOSE
-    )
+    try:
+        # Regex to match 8-digit numbers, allowing for spaces, hyphens, or other separators
+        number_pattern = re.compile(
+            r"""
+            (?<!\d)          # Negative lookbehind to ensure the number is not part of a longer sequence
+            (\d{2}[-\s]?\d{2}[-\s]?\d{2}[-\s]?\d{2})  # Match 8 digits with optional separators
+            (?!\d)           # Negative lookahead to ensure the number is not part of a longer sequence
+            """,
+            re.VERBOSE
+        )
 
-    # Find all matches in the comment
-    matches = number_pattern.findall(comment)
+        # Find all matches in the comment
+        matches = number_pattern.findall(comment)
 
-    # Clean the matches by removing non-digit characters
-    cleaned_numbers = []
-    for match in matches:
-        # Remove all non-digit characters
-        cleaned_number = re.sub(r"[^\d]", "", match)
-        if len(cleaned_number) == 8:
-            cleaned_numbers.append(cleaned_number)
+        # Clean the matches by removing non-digit characters
+        cleaned_numbers = []
+        for match in matches:
+            # Remove all non-digit characters
+            cleaned_number = re.sub(r"[^\d]", "", match)
+            if len(cleaned_number) == 8:
+                cleaned_numbers.append(cleaned_number)
 
-    return cleaned_numbers
+        return cleaned_numbers
+    except Exception as e:
+        logging.error(f"Error extracting numbers from comment: {e}")
+        return []
 
 # Function to load logs from file
 def load_logs():
-    if os.path.exists(LOG_FILE):
-        return pd.read_csv(LOG_FILE)
-    return pd.DataFrame(columns=["Timestamp", "Username", "Number", "Comment", "Spam"])
+    try:
+        if os.path.exists(LOG_FILE):
+            return pd.read_csv(LOG_FILE)
+        return pd.DataFrame(columns=["Timestamp", "Username", "Number", "Comment", "Spam"])
+    except Exception as e:
+        logging.error(f"Error loading logs: {e}")
+        return pd.DataFrame(columns=["Timestamp", "Username", "Number", "Comment", "Spam"])
 
 # Function to save logs to file
 def save_logs(logs_df):
-    if os.path.exists(LOG_FILE):
-        logs_df.to_csv(LOG_FILE, mode="a", header=False, index=False)
-    else:
-        logs_df.to_csv(LOG_FILE, index=False)
+    try:
+        if os.path.exists(LOG_FILE):
+            logs_df.to_csv(LOG_FILE, mode="a", header=False, index=False)
+        else:
+            logs_df.to_csv(LOG_FILE, index=False)
+    except Exception as e:
+        logging.error(f"Error saving logs: {e}")
 
 # Function to clear logs
 def clear_logs():
-    # Clear in-memory logs
-    st.session_state["logs"] = pd.DataFrame(columns=["Timestamp", "Username", "Number", "Comment", "Spam"])
-    # Clear persistent log file
-    if os.path.exists(LOG_FILE):
-        os.remove(LOG_FILE)
-    st.success("Logs cleared successfully!")
+    try:
+        # Clear in-memory logs
+        st.session_state["logs"] = pd.DataFrame(columns=["Timestamp", "Username", "Number", "Comment", "Spam"])
+        # Clear persistent log file
+        if os.path.exists(LOG_FILE):
+            os.remove(LOG_FILE)
+        st.success("Logs cleared successfully!")
+    except Exception as e:
+        logging.error(f"Error clearing logs: {e}")
+        st.error(f"Error clearing logs: {e}")
 
 # Function to handle comment events
 async def handle_comment(event: CommentEvent):
@@ -112,54 +127,58 @@ async def start_scraper(live_id):
         st.error("Please enter a valid TikTok Live ID.")
         return
 
-    # Initialize the TikTokLiveClient
-    client = TikTokLiveClient(unique_id=live_id)
+    try:
+        # Initialize the TikTokLiveClient
+        client = TikTokLiveClient(unique_id=live_id)
 
-    # Define event handlers
-    @client.on(ConnectEvent)
-    async def on_connect(event: ConnectEvent):
-        try:
-            st.success(f"Successfully connected to @{event.unique_id}!")
-        except Exception as e:
-            logging.error(f"Error during connection: {e}")
-            st.error(f"Error during connection: {e}")
-
-    @client.on(DisconnectEvent)
-    async def on_disconnect(event: DisconnectEvent):
-        try:
-            st.warning("Disconnected. Attempting to reconnect...")
-        except Exception as e:
-            logging.error(f"Error during disconnection: {e}")
-            st.error(f"Error during disconnection: {e}")
-
-    @client.on(CommentEvent)
-    async def on_comment(event: CommentEvent):
-        await handle_comment(event)
-
-    # Global error handler for the asyncio loop
-    def handle_exception(loop, context):
-        error_message = context.get("exception", context["message"])
-        logging.error(f"Uncaught exception: {error_message}")
-        st.error(f"Uncaught exception: {error_message}")
-
-    # Register global exception handler for asyncio loop
-    asyncio.get_event_loop().set_exception_handler(handle_exception)
-
-    # Run client and reconnect on failure
-    async def run_client_with_reconnect():
-        retries = 0
-        while st.session_state["scraper_active"]:
+        # Define event handlers
+        @client.on(ConnectEvent)
+        async def on_connect(event: ConnectEvent):
             try:
-                await client.connect()
-                await client.run()
+                st.success(f"Successfully connected to @{event.unique_id}!")
             except Exception as e:
-                retries += 1
-                logging.error(f"Connection lost. Retrying... (Retry {retries})")
-                st.warning(f"Connection lost. Retrying... (Retry {retries})")
-                await asyncio.sleep(5)  # Wait before retrying
+                logging.error(f"Error during connection: {e}")
+                st.error(f"Error during connection: {e}")
 
-    # Run the async client in an asyncio loop
-    await run_client_with_reconnect()
+        @client.on(DisconnectEvent)
+        async def on_disconnect(event: DisconnectEvent):
+            try:
+                st.warning("Disconnected. Attempting to reconnect...")
+            except Exception as e:
+                logging.error(f"Error during disconnection: {e}")
+                st.error(f"Error during disconnection: {e}")
+
+        @client.on(CommentEvent)
+        async def on_comment(event: CommentEvent):
+            await handle_comment(event)
+
+        # Global error handler for the asyncio loop
+        def handle_exception(loop, context):
+            error_message = context.get("exception", context["message"])
+            logging.error(f"Uncaught exception: {error_message}")
+            st.error(f"Uncaught exception: {error_message}")
+
+        # Register global exception handler for asyncio loop
+        asyncio.get_event_loop().set_exception_handler(handle_exception)
+
+        # Run client and reconnect on failure
+        async def run_client_with_reconnect():
+            retries = 0
+            while st.session_state["scraper_active"]:
+                try:
+                    await client.connect()
+                    await client.run()
+                except Exception as e:
+                    retries += 1
+                    logging.error(f"Connection lost. Retrying... (Retry {retries})")
+                    st.warning(f"Connection lost. Retrying... (Retry {retries})")
+                    await asyncio.sleep(5)  # Wait before retrying
+
+        # Run the async client in an asyncio loop
+        await run_client_with_reconnect()
+    except Exception as e:
+        logging.error(f"Error starting scraper: {e}")
+        st.error(f"Error starting scraper: {e}")
 
 # Streamlit dashboard
 def main():
