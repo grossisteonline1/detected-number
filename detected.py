@@ -6,10 +6,11 @@ import re
 from datetime import datetime, timedelta
 import asyncio
 import logging
-import json
+import os
 
 # Constants
 SPAM_TIME_WINDOW = timedelta(minutes=3)
+LOG_FILE = "logs.csv"  # File to store logs persistently
 
 # In-memory storage for logs
 recent_numbers = {}  # Use a dictionary to store timestamps for each number
@@ -23,72 +24,56 @@ def extract_eight_digit_numbers(comment):
     cleaned_number = "".join(digit_groups)[:8]
     return [cleaned_number] if len(cleaned_number) == 8 else []
 
+# Function to load logs from file
+def load_logs():
+    if os.path.exists(LOG_FILE):
+        return pd.read_csv(LOG_FILE)
+    return pd.DataFrame(columns=["Timestamp", "Username", "Number", "Comment", "Spam"])
+
+# Function to save logs to file
+def save_logs(logs_df):
+    logs_df.to_csv(LOG_FILE, index=False)
+
+# Function to clear logs
+def clear_logs():
+    # Clear in-memory logs
+    st.session_state["logs"] = pd.DataFrame(columns=["Timestamp", "Username", "Number", "Comment", "Spam"])
+    # Clear persistent log file
+    if os.path.exists(LOG_FILE):
+        os.remove(LOG_FILE)
+    st.session_state["notification"] = "Logs cleared successfully!"  # Store notification in session state
+
 # Streamlit dashboard
 def main():
     st.set_page_config(page_title="TikTok Scraper Dashboard", layout="wide")
 
     # Initialize session state variables
-    if "connection_status" not in st.session_state:
-        st.session_state["connection_status"] = "Not connected"
     if "logs" not in st.session_state:
-        st.session_state["logs"] = pd.DataFrame(columns=["Timestamp", "Username", "Number", "Comment", "Spam"])
+        st.session_state["logs"] = load_logs()  # Load logs from file
     if "scraper_active" not in st.session_state:
         st.session_state["scraper_active"] = False
-
-    # Load logs from browser storage (if available)
-    if "logs_loaded" not in st.session_state:
-        st.session_state["logs_loaded"] = False
-
-    if not st.session_state["logs_loaded"]:
-        # Inject JavaScript to retrieve logs from localStorage
-        js_code = """
-        <script>
-        const logs = localStorage.getItem("tiktok_logs");
-        if (logs) {
-            window.parent.postMessage({ type: "logs", data: logs }, "*");
-        }
-        </script>
-        """
-        st.markdown(js_code, unsafe_allow_html=True)
-
-        # Listen for messages from JavaScript
-        st.markdown(
-            """
-            <script>
-            window.addEventListener("message", (event) => {
-                if (event.data.type === "logs") {
-                    const logs = JSON.parse(event.data.data);
-                    window.parent.postMessage({ type: "streamlit", logs: logs }, "*");
-                }
-            });
-            </script>
-            """,
-            unsafe_allow_html=True,
-        )
-
-        # Handle logs sent from JavaScript
-        if "logs" in st.session_state:
-            logs_json = st.session_state["logs"]
-            if not logs_json.empty:  # Fix: Check if the DataFrame is not empty
-                logs_df = pd.read_json(logs_json, orient="split")
-                st.session_state["logs"] = logs_df
-                st.session_state["logs_loaded"] = True
+    if "notification" not in st.session_state:
+        st.session_state["notification"] = None  # Initialize notification
 
     st.title("TikTok Scraper Dashboard")
 
     # Input for TikTok Live ID
     live_id = st.text_input("Enter TikTok Live ID:", "@ID")
 
-    # Display connection status
-    st.subheader("Connection Status")
-    st.text(st.session_state["connection_status"])
-
     # Create a container for logs
     log_container = st.empty()
 
-    # Display logs (initially loaded from session state or browser storage)
+    # Display logs (initially loaded from file)
     log_container.subheader("Detected Numbers and Comments")
     log_container.dataframe(st.session_state["logs"], use_container_width=True)
+
+    # Notification placeholder
+    notification_placeholder = st.empty()
+
+    # Display notification if it exists
+    if st.session_state["notification"]:
+        notification_placeholder.success(st.session_state["notification"])
+        st.session_state["notification"] = None  # Clear notification after displaying
 
     # Function to handle comment events
     async def handle_comment(event: CommentEvent):
@@ -118,24 +103,19 @@ def main():
                         ignore_index=True
                     )
 
-                    # Save logs to browser storage
-                    logs_json = st.session_state["logs"].to_json(orient="split")
-                    js_code = f"""
-                    <script>
-                    localStorage.setItem("tiktok_logs", '{logs_json}');
-                    </script>
-                    """
-                    st.markdown(js_code, unsafe_allow_html=True)
+                    # Save logs to file
+                    save_logs(st.session_state["logs"])
 
                     # Update the displayed log on Streamlit
                     log_container.dataframe(st.session_state["logs"], use_container_width=True)
         except Exception as e:
             logging.error(f"Error processing comment: {e}")
+            st.session_state["notification"] = f"Error processing comment: {e}"  # Store error in session state
 
     # Function to start the scraper
     async def start_scraper():
         if live_id.strip() == "":
-            st.error("Please enter a valid TikTok Live ID.")
+            st.session_state["notification"] = "Please enter a valid TikTok Live ID."  # Store error in session state
             return
 
         # Initialize the TikTokLiveClient
@@ -145,17 +125,18 @@ def main():
         @client.on(ConnectEvent)
         async def on_connect(event: ConnectEvent):
             try:
-                st.session_state["connection_status"] = f"Connected to @{event.unique_id}"
+                st.session_state["notification"] = f"Successfully connected to @{event.unique_id}!"  # Store success in session state
             except Exception as e:
                 logging.error(f"Error during connection: {e}")
+                st.session_state["notification"] = f"Error during connection: {e}"  # Store error in session state
 
         @client.on(DisconnectEvent)
         async def on_disconnect(event: DisconnectEvent):
             try:
-                st.session_state["connection_status"] = "Disconnected"
-                st.warning("Disconnected. Attempting to reconnect...")
+                st.session_state["notification"] = "Disconnected. Attempting to reconnect..."  # Store warning in session state
             except Exception as e:
                 logging.error(f"Error during disconnection: {e}")
+                st.session_state["notification"] = f"Error during disconnection: {e}"  # Store error in session state
 
         @client.on(CommentEvent)
         async def on_comment(event: CommentEvent):
@@ -165,6 +146,7 @@ def main():
         def handle_exception(loop, context):
             error_message = context.get("exception", context["message"])
             logging.error(f"Uncaught exception: {error_message}")
+            st.session_state["notification"] = f"Uncaught exception: {error_message}"  # Store error in session state
 
         # Register global exception handler for asyncio loop
         asyncio.get_event_loop().set_exception_handler(handle_exception)
@@ -179,6 +161,7 @@ def main():
                 except Exception as e:
                     retries += 1
                     logging.error(f"Connection lost. Retrying... (Retry {retries})")
+                    st.session_state["notification"] = f"Connection lost. Retrying... (Retry {retries})"  # Store warning in session state
                     await asyncio.sleep(5)  # Wait before retrying
 
         # Run the async client in an asyncio loop
@@ -193,7 +176,11 @@ def main():
     # Button to stop the scraper
     if st.button("Stop Scraper"):
         st.session_state["scraper_active"] = False
-        st.success("Scraper stopped.")
+        st.session_state["notification"] = "Scraper stopped."  # Store success in session state
+
+    # Button to clear logs
+    if st.button("Clear Logs"):
+        clear_logs()
 
     # Button to download the logs as CSV
     if not st.session_state["logs"].empty:
