@@ -1,4 +1,5 @@
 streamlit
 pandas
+plyer
 TikTokLive==6.2.0
 httpx==0.27.2
