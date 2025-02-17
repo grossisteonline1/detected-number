@@ -20,31 +20,19 @@ recent_numbers = {}  # Use a dictionary to track numbers for the entire live ses
 # Function to extract valid 8-digit phone numbers
 def extract_eight_digit_numbers(comment):
     """
-    Extract valid 8-digit numbers from a comment.
+    Extract valid 8-digit numbers from a comment, ignoring all non-digit characters.
     """
     try:
-        # Regex to match 8-digit numbers, allowing for spaces, hyphens, or other separators
-        number_pattern = re.compile(
-            r"""
-            (?<!\d)          # Negative lookbehind to ensure the number is not part of a longer sequence
-            (\d{2}[-\s]?\d{2}[-\s]?\d{2}[-\s]?\d{2})  # Match 8 digits with optional separators
-            (?!\d)           # Negative lookahead to ensure the number is not part of a longer sequence
-            """,
-            re.VERBOSE
-        )
+        # Remove all non-digit characters (spaces, symbols, emojis, etc.)
+        cleaned_comment = re.sub(r"[^\d]", "", comment)
 
-        # Find all matches in the comment
-        matches = number_pattern.findall(comment)
+        # Regex to match 8-digit numbers
+        number_pattern = re.compile(r"\d{8}")
 
-        # Clean the matches by removing non-digit characters
-        cleaned_numbers = []
-        for match in matches:
-            # Remove all non-digit characters
-            cleaned_number = re.sub(r"[^\d]", "", match)
-            if len(cleaned_number) == 8:
-                cleaned_numbers.append(cleaned_number)
+        # Find all matches in the cleaned comment
+        matches = number_pattern.findall(cleaned_comment)
 
-        return cleaned_numbers
+        return matches
     except Exception as e:
         logging.error(f"Error extracting numbers from comment: {e}")
         return []
@@ -164,7 +152,8 @@ async def start_scraper(live_id):
         # Run client and reconnect on failure
         async def run_client_with_reconnect():
             retries = 0
-            while st.session_state["scraper_active"]:
+            max_retries = 5  # Set a maximum number of retries
+            while st.session_state["scraper_active"] and retries < max_retries:
                 try:
                     await client.connect()
                     await client.run()
@@ -173,6 +162,9 @@ async def start_scraper(live_id):
                     logging.error(f"Connection lost. Retrying... (Retry {retries})")
                     st.warning(f"Connection lost. Retrying... (Retry {retries})")
                     await asyncio.sleep(5)  # Wait before retrying
+            if retries >= max_retries:
+                st.error("Max retries reached. Please check your connection or restart the scraper.")
+                st.session_state["scraper_active"] = False
 
         # Run the async client in an asyncio loop
         await run_client_with_reconnect()
