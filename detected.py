@@ -1,4 +1,3 @@
-import logging
 import streamlit as st
 import pandas as pd
 from TikTokLive import TikTokLiveClient
@@ -6,11 +5,8 @@ from TikTokLive.events import ConnectEvent, CommentEvent, DisconnectEvent
 import re
 from datetime import datetime, timedelta
 import asyncio
+import logging
 import json
-from websockets.exceptions import ConnectionClosedError
-
-# Suppress watchdog debug logs
-logging.getLogger("watchdog.observers.inotify_buffer").setLevel(logging.WARNING)
 
 # Constants
 SPAM_TIME_WINDOW = timedelta(minutes=3)
@@ -19,17 +15,13 @@ SPAM_TIME_WINDOW = timedelta(minutes=3)
 recent_numbers = {}  # Use a dictionary to store timestamps for each number
 
 # Set up logging for uncaught exceptions
-logging.basicConfig(level=logging.DEBUG)  # Enable debug logging
+logging.basicConfig(level=logging.ERROR)
 
 # Function to extract valid 8-digit phone numbers
 def extract_eight_digit_numbers(comment):
-    # Remove all non-digit characters (spaces, symbols, emojis, etc.)
-    cleaned_comment = re.sub(r'\D', '', comment)
-    
-    # Find all sequences of exactly 8 digits
-    eight_digit_numbers = re.findall(r'\d{8}', cleaned_comment)
-    
-    return eight_digit_numbers
+    digit_groups = re.findall(r'\d+', comment)
+    cleaned_number = "".join(digit_groups)[:8]
+    return [cleaned_number] if len(cleaned_number) == 8 else []
 
 # Streamlit dashboard
 def main():
@@ -77,13 +69,10 @@ def main():
         # Handle logs sent from JavaScript
         if "logs" in st.session_state:
             logs_json = st.session_state["logs"]
-            if isinstance(logs_json, str):  # Ensure logs_json is a string
-                try:
-                    logs_df = pd.read_json(logs_json, orient="split")
-                    st.session_state["logs"] = logs_df
-                    st.session_state["logs_loaded"] = True
-                except Exception as e:
-                    logging.error(f"Error loading logs: {e}")
+            if not logs_json.empty:  # Fix: Check if the DataFrame is not empty
+                logs_df = pd.read_json(logs_json, orient="split")
+                st.session_state["logs"] = logs_df
+                st.session_state["logs_loaded"] = True
 
     st.title("TikTok Scraper Dashboard")
 
@@ -157,22 +146,16 @@ def main():
         async def on_connect(event: ConnectEvent):
             try:
                 st.session_state["connection_status"] = f"Connected to @{event.unique_id}"
-                st.toast("🎉 Stream Connected!", icon="✅")
-                logging.info(f"Connected to TikTok Live: @{event.unique_id}")
             except Exception as e:
                 logging.error(f"Error during connection: {e}")
-                st.error(f"Error during connection: {e}")
 
         @client.on(DisconnectEvent)
         async def on_disconnect(event: DisconnectEvent):
             try:
                 st.session_state["connection_status"] = "Disconnected"
-                st.toast("⚠️ Stream Disconnected!", icon="❌")
                 st.warning("Disconnected. Attempting to reconnect...")
-                logging.warning("Disconnected. Attempting to reconnect...")
             except Exception as e:
                 logging.error(f"Error during disconnection: {e}")
-                st.error(f"Error during disconnection: {e}")
 
         @client.on(CommentEvent)
         async def on_comment(event: CommentEvent):
@@ -182,24 +165,21 @@ def main():
         def handle_exception(loop, context):
             error_message = context.get("exception", context["message"])
             logging.error(f"Uncaught exception: {error_message}")
-            # Do not use st.error here to avoid Streamlit UI updates
 
         # Register global exception handler for asyncio loop
         asyncio.get_event_loop().set_exception_handler(handle_exception)
 
         # Run client and reconnect on failure
         async def run_client_with_reconnect():
+            retries = 0
             while st.session_state["scraper_active"]:
                 try:
                     await client.connect()
                     await client.run()
-                except ConnectionClosedError as e:
-                    logging.error(f"Connection closed. Retrying...")
-                    st.warning("🔌 Stream is Offline. Retrying...")
-                    await asyncio.sleep(10)  # Wait before retrying
                 except Exception as e:
-                    logging.error(f"Unexpected error: {e}")
-                    break
+                    retries += 1
+                    logging.error(f"Connection lost. Retrying... (Retry {retries})")
+                    await asyncio.sleep(5)  # Wait before retrying
 
         # Run the async client in an asyncio loop
         await run_client_with_reconnect()
@@ -213,7 +193,6 @@ def main():
     # Button to stop the scraper
     if st.button("Stop Scraper"):
         st.session_state["scraper_active"] = False
-        st.toast("🛑 Scraper Stopped!", icon="⏹️")
         st.success("Scraper stopped.")
 
     # Button to download the logs as CSV
