@@ -34,11 +34,10 @@ def main():
         st.session_state["logs"] = pd.DataFrame(columns=["Timestamp", "Username", "Number", "Comment", "Spam"])
     if "scraper_active" not in st.session_state:
         st.session_state["scraper_active"] = False
-
-    # Load logs from browser storage (if available)
     if "logs_loaded" not in st.session_state:
         st.session_state["logs_loaded"] = False
 
+    # Load logs from browser storage (if available)
     if not st.session_state["logs_loaded"]:
         # Inject JavaScript to retrieve logs from localStorage
         js_code = """
@@ -69,10 +68,16 @@ def main():
         # Handle logs sent from JavaScript
         if "logs" in st.session_state:
             logs_json = st.session_state["logs"]
-            if not logs_json.empty:  # Fix: Check if the DataFrame is not empty
-                logs_df = pd.read_json(logs_json, orient="split")
-                st.session_state["logs"] = logs_df
-                st.session_state["logs_loaded"] = True
+            if not logs_json.empty:  # Check if the DataFrame is not empty
+                try:
+                    # Convert the DataFrame to a JSON string
+                    logs_json_str = logs_json.to_json(orient="split")
+                    # Deserialize the JSON string back into a DataFrame
+                    logs_df = pd.read_json(logs_json_str, orient="split")
+                    st.session_state["logs"] = logs_df
+                    st.session_state["logs_loaded"] = True
+                except Exception as e:
+                    st.error(f"Error loading logs: {e}")
 
     st.title("TikTok Scraper Dashboard")
 
