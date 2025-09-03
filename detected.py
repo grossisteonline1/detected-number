@@ -23,6 +23,7 @@ def extract_eight_digit_numbers(comment):
     cleaned_number = "".join(digit_groups)[:8]
     return [cleaned_number] if len(cleaned_number) == 8 else []
 
+
 # Streamlit dashboard
 def main():
     st.set_page_config(page_title="TikTok Scraper Dashboard", layout="wide")
@@ -65,19 +66,19 @@ def main():
             unsafe_allow_html=True,
         )
 
-        # Handle logs sent from JavaScript
-        if "logs" in st.session_state:
-            logs_json = st.session_state["logs"]
-            if not logs_json.empty:  # Check if the DataFrame is not empty
-                try:
-                    # Convert the DataFrame to a JSON string
-                    logs_json_str = logs_json.to_json(orient="split")
-                    # Deserialize the JSON string back into a DataFrame
-                    logs_df = pd.read_json(logs_json_str, orient="split")
-                    st.session_state["logs"] = logs_df
-                    st.session_state["logs_loaded"] = True
-                except Exception as e:
-                    st.error(f"Error loading logs: {e}")
+    # Handle logs sent from JavaScript
+    if "logs" in st.session_state:
+        logs_json = st.session_state["logs"]
+        if not logs_json.empty:  # Check if the DataFrame is not empty
+            try:
+                # Convert the DataFrame to a JSON string
+                logs_json_str = logs_json.to_json(orient="split")
+                # Deserialize the JSON string back into a DataFrame
+                logs_df = pd.read_json(logs_json_str, orient="split")
+                st.session_state["logs"] = logs_df
+                st.session_state["logs_loaded"] = True
+            except Exception as e:
+                st.error(f"Error loading logs: {e}")
 
     st.title("TikTok Scraper Dashboard")
 
@@ -93,7 +94,7 @@ def main():
 
     # Display logs (initially loaded from session state or browser storage)
     log_container.subheader("Detected Numbers and Comments")
-    log_container.dataframe(st.session_state["logs"], use_container_width=True)
+    log_container.dataframe(st.session_state["logs"], width="stretch")
 
     # Function to handle comment events
     async def handle_comment(event: CommentEvent):
@@ -109,6 +110,7 @@ def main():
                     recent_numbers[detected_number] = current_time
 
                     username = getattr(event.user, 'nickname', event.user.unique_id)
+
                     log_entry = {
                         "Timestamp": current_time.strftime('%Y-%m-%d %H:%M:%S'),
                         "Username": username,
@@ -133,7 +135,8 @@ def main():
                     st.markdown(js_code, unsafe_allow_html=True)
 
                     # Update the displayed log on Streamlit
-                    log_container.dataframe(st.session_state["logs"], use_container_width=True)
+                    log_container.dataframe(st.session_state["logs"], width="stretch")
+
         except Exception as e:
             logging.error(f"Error processing comment: {e}")
 
@@ -209,6 +212,7 @@ def main():
             file_name="tiktok_logs.csv",
             mime="text/csv"
         )
+
 
 if __name__ == "__main__":
     main()
