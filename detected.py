@@ -96,7 +96,7 @@ def main():
 
     # Display logs (initially loaded from session state or browser storage)
     log_container.subheader("Detected Numbers and Comments")
-    log_container.dataframe(st.session_state["logs"], use_container_width=True)
+    log_container.dataframe(st.session_state["logs"], width="stretch")
 
     # Function to handle comment events
     async def handle_comment(event: CommentEvent):
@@ -140,7 +140,7 @@ def main():
                     st.markdown(js_code, unsafe_allow_html=True)
 
                     # Update the displayed log on Streamlit
-                    log_container.dataframe(st.session_state["logs"], use_container_width=True)
+                    log_container.dataframe(st.session_state["logs"], width="stretch")
 
         except Exception as e:
             logging.error(f"Error processing comment: {e}")
