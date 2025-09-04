@@ -32,7 +32,9 @@ def main():
     if "connection_status" not in st.session_state:
         st.session_state["connection_status"] = "Not connected"
     if "logs" not in st.session_state:
-        st.session_state["logs"] = pd.DataFrame(columns=["Timestamp", "Username", "Number", "Comment", "Spam"])
+        st.session_state["logs"] = pd.DataFrame(
+            columns=["Timestamp", "Username", "Number", "Comment", "Spam"]
+        )
     if "scraper_active" not in st.session_state:
         st.session_state["scraper_active"] = False
     if "logs_loaded" not in st.session_state:
@@ -94,7 +96,7 @@ def main():
 
     # Display logs (initially loaded from session state or browser storage)
     log_container.subheader("Detected Numbers and Comments")
-    log_container.dataframe(st.session_state["logs"], width="stretch")
+    log_container.dataframe(st.session_state["logs"], use_container_width=True)
 
     # Function to handle comment events
     async def handle_comment(event: CommentEvent):
@@ -104,13 +106,16 @@ def main():
 
             if detected_numbers:
                 for detected_number in detected_numbers:
-                    is_spam = detected_number in recent_numbers and (
-                        current_time - recent_numbers[detected_number] < SPAM_TIME_WINDOW
+                    is_spam = (
+                        detected_number in recent_numbers
+                        and (
+                            current_time - recent_numbers[detected_number]
+                            < SPAM_TIME_WINDOW
+                        )
                     )
                     recent_numbers[detected_number] = current_time
 
                     username = getattr(event.user, 'nickname', event.user.unique_id)
-
                     log_entry = {
                         "Timestamp": current_time.strftime('%Y-%m-%d %H:%M:%S'),
                         "Username": username,
@@ -135,7 +140,7 @@ def main():
                     st.markdown(js_code, unsafe_allow_html=True)
 
                     # Update the displayed log on Streamlit
-                    log_container.dataframe(st.session_state["logs"], width="stretch")
+                    log_container.dataframe(st.session_state["logs"], use_container_width=True)
 
         except Exception as e:
             logging.error(f"Error processing comment: {e}")
