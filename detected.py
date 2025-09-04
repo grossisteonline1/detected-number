@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 import asyncio
 import logging
 import json
+import io  # ✅ For StringIO
 
 # Constants
 SPAM_TIME_WINDOW = timedelta(minutes=3)
@@ -42,7 +43,6 @@ def main():
 
     # Load logs from browser storage (if available)
     if not st.session_state["logs_loaded"]:
-        # Inject JavaScript to retrieve logs from localStorage
         js_code = """
         <script>
         const logs = localStorage.getItem("tiktok_logs");
@@ -53,7 +53,6 @@ def main():
         """
         st.markdown(js_code, unsafe_allow_html=True)
 
-        # Listen for messages from JavaScript
         st.markdown(
             """
             <script>
@@ -71,12 +70,13 @@ def main():
     # Handle logs sent from JavaScript
     if "logs" in st.session_state:
         logs_json = st.session_state["logs"]
-        if not logs_json.empty:  # Check if the DataFrame is not empty
+        if not logs_json.empty:
             try:
-                # Convert the DataFrame to a JSON string
                 logs_json_str = logs_json.to_json(orient="split")
-                # Deserialize the JSON string back into a DataFrame
-                logs_df = pd.read_json(logs_json_str, orient="split")
+
+                # ✅ Fixed FutureWarning with StringIO
+                logs_df = pd.read_json(io.StringIO(logs_json_str), orient="split")
+
                 st.session_state["logs"] = logs_df
                 st.session_state["logs_loaded"] = True
             except Exception as e:
@@ -94,7 +94,7 @@ def main():
     # Create a container for logs
     log_container = st.empty()
 
-    # Display logs (initially loaded from session state or browser storage)
+    # Display logs
     log_container.subheader("Detected Numbers and Comments")
     log_container.dataframe(st.session_state["logs"], width="stretch")
 
@@ -124,11 +124,20 @@ def main():
                         "Spam": "Yes" if is_spam else "No"
                     }
 
-                    # Append new log entry to session state logs
+                    # Append log entry
                     st.session_state["logs"] = pd.concat(
                         [st.session_state["logs"], pd.DataFrame([log_entry])],
                         ignore_index=True
                     )
+
+                    # ✅ Enforce safe dtypes for Arrow compatibility
+                    st.session_state["logs"] = st.session_state["logs"].astype({
+                        "Timestamp": "string",
+                        "Username": "string",
+                        "Number": "string",
+                        "Comment": "string",
+                        "Spam": "string"
+                    })
 
                     # Save logs to browser storage
                     logs_json = st.session_state["logs"].to_json(orient="split")
@@ -139,7 +148,7 @@ def main():
                     """
                     st.markdown(js_code, unsafe_allow_html=True)
 
-                    # Update the displayed log on Streamlit
+                    # Update displayed logs
                     log_container.dataframe(st.session_state["logs"], width="stretch")
 
         except Exception as e:
@@ -151,10 +160,8 @@ def main():
             st.error("Please enter a valid TikTok Live ID.")
             return
 
-        # Initialize the TikTokLiveClient
         client = TikTokLiveClient(unique_id=live_id)
 
-        # Define event handlers
         @client.on(ConnectEvent)
         async def on_connect(event: ConnectEvent):
             try:
@@ -174,15 +181,12 @@ def main():
         async def on_comment(event: CommentEvent):
             await handle_comment(event)
 
-        # Global error handler for the asyncio loop
         def handle_exception(loop, context):
             error_message = context.get("exception", context["message"])
             logging.error(f"Uncaught exception: {error_message}")
 
-        # Register global exception handler for asyncio loop
         asyncio.get_event_loop().set_exception_handler(handle_exception)
 
-        # Run client and reconnect on failure
         async def run_client_with_reconnect():
             retries = 0
             while st.session_state["scraper_active"]:
@@ -192,23 +196,20 @@ def main():
                 except Exception as e:
                     retries += 1
                     logging.error(f"Connection lost. Retrying... (Retry {retries})")
-                    await asyncio.sleep(5)  # Wait before retrying
+                    await asyncio.sleep(5)
 
-        # Run the async client in an asyncio loop
         await run_client_with_reconnect()
 
-    # Button to start the scraper
+    # Buttons
     if st.button("Start Scraper") or st.session_state["scraper_active"]:
         st.session_state["scraper_active"] = True
         with st.spinner("Scraper is running..."):
             asyncio.run(start_scraper())
 
-    # Button to stop the scraper
     if st.button("Stop Scraper"):
         st.session_state["scraper_active"] = False
         st.success("Scraper stopped.")
 
-    # Button to download the logs as CSV
     if not st.session_state["logs"].empty:
         csv = st.session_state["logs"].to_csv(index=False)
         st.download_button(
