@@ -1,130 +1,217 @@
-import re
-import datetime
 import streamlit as st
-from TikTokLive import TikTokLiveClient
-from TikTokLive.events import CommentEvent
 import pandas as pd
-import io
+from TikTokLive import TikTokLiveClient
+from TikTokLive.events import ConnectEvent, CommentEvent, DisconnectEvent
+import re
+from datetime import datetime, timedelta
+import asyncio
+import logging
+import json
+import io  # ✅ For StringIO
 
-# --- Authentification ---
-st.title("🔐 TikTok Live Phone Extractor - Login")
+# ✅ Constants
+SPAM_TIME_WINDOW = timedelta(minutes=3)
 
-# Identifiants fixes
-USERNAME = "admin"
-PASSWORD = "1234"
+# ✅ In-memory storage for logs
+recent_numbers = {}
 
-# Formulaire login
-login_username = st.text_input("Nom d'utilisateur")
-login_password = st.text_input("Mot de passe", type="password")
+# ✅ Logging setup
+logging.basicConfig(level=logging.ERROR)
 
-if st.button("Se connecter"):
-    if login_username == USERNAME and login_password == PASSWORD:
-        st.success("✅ Connexion réussie")
-        st.session_state["logged_in"] = True
-    else:
-        st.error("❌ Identifiants incorrects")
 
-# --- Interface principale ---
-if st.session_state.get("logged_in", False):
-    st.title("📊 TikTok Live Phone Extractor")
+# ✅ Function to extract valid 8-digit phone numbers
+def extract_eight_digit_numbers(comment):
+    digit_groups = re.findall(r'\d+', comment)
+    cleaned_number = "".join(digit_groups)[:8]
+    return [cleaned_number] if len(cleaned_number) == 8 else []
 
-    tiktok_id = st.text_input("Enter TikTok Live ID:", "rafikaouayy")
 
-    # Option Spam
-    filter_spam = st.checkbox("Activer le filtre anti-spam (supprimer doublons)")
+# ✅ Streamlit Dashboard
+def main():
+    st.set_page_config(page_title="TikTok Scraper Dashboard", layout="wide")
 
-    status_placeholder = st.empty()
-    table_placeholder = st.empty()
-    
-    # Download button placeholder
-    download_placeholder = st.empty()
+    # --- Initialize session state ---
+    if "connection_status" not in st.session_state:
+        st.session_state["connection_status"] = "Not connected"
+    if "logs" not in st.session_state:
+        st.session_state["logs"] = pd.DataFrame(
+            columns=["Timestamp", "Username", "Number", "Comment", "Spam"]
+        )
+    if "scraper_active" not in st.session_state:
+        st.session_state["scraper_active"] = False
+    if "logs_loaded" not in st.session_state:
+        st.session_state["logs_loaded"] = False
 
-    # Stockage des résultats
-    if "data" not in st.session_state:
-        st.session_state.data = []
-    if "numero_count" not in st.session_state:
-        st.session_state.numero_count = {}
+    # --- Load logs from browser storage ---
+    if not st.session_state["logs_loaded"]:
+        js_code = """
+        <script>
+            const logs = localStorage.getItem("tiktok_logs");
+            if (logs) {
+                window.parent.postMessage({ type: "logs", data: logs }, "*");
+            }
+        </script>
+        """
+        st.markdown(js_code, unsafe_allow_html=True)
 
-    # --- Function: Always extract first 8 digits if available ---
-    def extract_eight_digit_numbers(comment):
-        digit_groups = re.findall(r'\d+', comment)  # all groups of digits
-        if not digit_groups:
-            return []  # no digits found
-        cleaned_number = "".join(digit_groups)[:8]  # keep first 8 digits only
-        return [cleaned_number] if len(cleaned_number) == 8 else []
+        st.markdown(
+            """
+            <script>
+                window.addEventListener("message", (event) => {
+                    if (event.data.type === "logs") {
+                        const logs = JSON.parse(event.data.data);
+                        window.parent.postMessage({ type: "streamlit", logs: logs }, "*");
+                    }
+                });
+            </script>
+            """,
+            unsafe_allow_html=True,
+        )
 
-    # Function to create downloadable CSV
-    def convert_to_csv(data):
-        if not data:
-            return None
-        df = pd.DataFrame(data)
-        return df.to_csv(index=False, encoding='utf-8')
+    # --- Handle logs from JS ---
+    if "logs" in st.session_state:
+        logs_json = st.session_state["logs"]
+        if not logs_json.empty:
+            try:
+                logs_json_str = logs_json.to_json(orient="split")
+                logs_df = pd.read_json(io.StringIO(logs_json_str), orient="split")
+                st.session_state["logs"] = logs_df
+                st.session_state["logs_loaded"] = True
+            except Exception as e:
+                st.error(f"Error loading logs: {e}")
 
-    # Download button logic
-    if st.session_state.data:
-        csv_data = convert_to_csv(st.session_state.data)
-        if csv_data:
-            download_placeholder.download_button(
-                label="📥 Download Logs as CSV",
-                data=csv_data,
-                file_name=f"tiktok_live_numbers_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                mime="text/csv"
-            )
+    # --- UI ---
+    st.title("TikTok Scraper Dashboard")
 
-    if st.button("Connect"):
-        if tiktok_id and tiktok_id != "@ID":
-            status_placeholder.write("✅ Connecting to TikTok Live...")
+    live_id = st.text_input("Enter TikTok Live ID:", "@ID")
 
-            # Client TikTok Live
-            client = TikTokLiveClient(unique_id=tiktok_id.replace("@", ""))
+    st.subheader("Connection Status")
+    st.text(st.session_state["connection_status"])
 
-            @client.on(CommentEvent)
-            async def on_comment(event: CommentEvent):
-                # Extract numbers using your updated function
-                numeros = extract_eight_digit_numbers(event.comment)
+    log_container = st.empty()
+    log_container.subheader("Detected Numbers and Comments")
+    log_container.dataframe(st.session_state["logs"], width="stretch")
 
-                if numeros:
-                    for num in numeros:
-                        # Compter les occurrences
-                        st.session_state.numero_count[num] = st.session_state.numero_count.get(num, 0) + 1
+    # --- Handle Comment Events ---
+    async def handle_comment(event: CommentEvent):
+        try:
+            detected_numbers = extract_eight_digit_numbers(event.comment)
+            current_time = datetime.now()
 
-                        # Si filtre spam activé → ignorer doublons
-                        if filter_spam and st.session_state.numero_count[num] > 1:
-                            continue
+            if detected_numbers:
+                for detected_number in detected_numbers:
+                    is_spam = (
+                        detected_number in recent_numbers
+                        and (current_time - recent_numbers[detected_number] < SPAM_TIME_WINDOW)
+                    )
+                    recent_numbers[detected_number] = current_time
 
-                        # Champ Spam
-                        if filter_spam:
-                            spam_status = "No"
-                        else:
-                            spam_status = (
-                                "No" if st.session_state.numero_count[num] == 1
-                                else f"Oui : {st.session_state.numero_count[num]}ème fois"
-                            )
+                    username = getattr(event.user, 'nickname', event.user.unique_id)
 
-                        # Ajouter dans data avec un ID clair
-                        st.session_state.data.append({
-                            "ID": len(st.session_state.data) + 1,
-                            "Timestamp": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                            "Username": event.user.nickname,
-                            "Detected Number": num,  # ✅ always 8 digits
-                            "Original Comment": event.comment,  # full comment
-                            "Spam": spam_status
-                        })
+                    log_entry = {
+                        "Timestamp": current_time.strftime('%Y-%m-%d %H:%M:%S'),
+                        "Username": username,
+                        "Number": detected_number,
+                        "Comment": event.comment,
+                        "Spam": "Yes" if is_spam else "No"
+                    }
 
-                        # Affichage du tableau en direct
-                        table_placeholder.table(st.session_state.data)
-                        
-                        # Update download button
-                        csv_data = convert_to_csv(st.session_state.data)
-                        if csv_data:
-                            download_placeholder.download_button(
-                                label="📥 Download Logs as CSV",
-                                data=csv_data,
-                                file_name=f"tiktok_live_numbers_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                                mime="text/csv"
-                            )
+                    # Append new entry
+                    st.session_state["logs"] = pd.concat(
+                        [st.session_state["logs"], pd.DataFrame([log_entry])],
+                        ignore_index=True
+                    )
 
-            # Lancer le client
-            client.run()
-        else:
-            status_placeholder.write("❌ Please enter a valid TikTok ID")
+                    # Ensure safe dtypes for Arrow
+                    st.session_state["logs"] = st.session_state["logs"].astype({
+                        "Timestamp": "string",
+                        "Username": "string",
+                        "Number": "string",
+                        "Comment": "string",
+                        "Spam": "string"
+                    })
+
+                    # Save logs to browser storage
+                    logs_json = st.session_state["logs"].to_json(orient="split")
+                    js_code = f"""
+                    <script>
+                        localStorage.setItem("tiktok_logs", '{logs_json}');
+                    </script>
+                    """
+                    st.markdown(js_code, unsafe_allow_html=True)
+
+                    # Update logs display
+                    log_container.dataframe(st.session_state["logs"], width="stretch")
+
+        except Exception as e:
+            logging.error(f"Error processing comment: {e}")
+
+    # --- Start Scraper ---
+    async def start_scraper():
+        if live_id.strip() == "":
+            st.error("Please enter a valid TikTok Live ID.")
+            return
+
+        client = TikTokLiveClient(unique_id=live_id)
+
+        @client.on(ConnectEvent)
+        async def on_connect(event: ConnectEvent):
+            try:
+                st.session_state["connection_status"] = f"Connected to @{event.unique_id}"
+            except Exception as e:
+                logging.error(f"Error during connection: {e}")
+
+        @client.on(DisconnectEvent)
+        async def on_disconnect(event: DisconnectEvent):
+            try:
+                st.session_state["connection_status"] = "Disconnected"
+                st.warning("Disconnected. Attempting to reconnect...")
+            except Exception as e:
+                logging.error(f"Error during disconnection: {e}")
+
+        @client.on(CommentEvent)
+        async def on_comment(event: CommentEvent):
+            await handle_comment(event)
+
+        def handle_exception(loop, context):
+            error_message = context.get("exception", context["message"])
+            logging.error(f"Uncaught exception: {error_message}")
+
+        asyncio.get_event_loop().set_exception_handler(handle_exception)
+
+        async def run_client_with_reconnect():
+            retries = 0
+            while st.session_state["scraper_active"]:
+                try:
+                    await client.connect()
+                    await client.run()
+                except Exception as e:
+                    retries += 1
+                    logging.error(f"Connection lost. Retrying... (Retry {retries})")
+                    await asyncio.sleep(5)
+
+        await run_client_with_reconnect()
+
+    # --- Buttons ---
+    if st.button("Start Scraper") or st.session_state["scraper_active"]:
+        st.session_state["scraper_active"] = True
+        with st.spinner("Scraper is running..."):
+            asyncio.run(start_scraper())
+
+    if st.button("Stop Scraper"):
+        st.session_state["scraper_active"] = False
+        st.success("Scraper stopped.")
+
+    # --- Download logs ---
+    if not st.session_state["logs"].empty:
+        csv = st.session_state["logs"].to_csv(index=False)
+        st.download_button(
+            label="Download Logs as CSV",
+            data=csv,
+            file_name="tiktok_logs.csv",
+            mime="text/csv"
+        )
+
+
+if __name__ == "__main__":
+    main()
