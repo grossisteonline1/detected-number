@@ -1,5 +1,5 @@
-streamlit
-pandas
+streamlit==1.46.1
+pandas==2.2.3
 TikTokLive==6.6.5
 httpx==0.27.2
 
