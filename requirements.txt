@@ -1,4 +1,4 @@
 streamlit
 pandas
 TikTokLive==6.6.5
-httpx
+httpx 0.28.0
